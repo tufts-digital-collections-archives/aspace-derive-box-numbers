@@ -2,6 +2,6 @@
 
 A set of scripts for deriving box-numbers from archival object component identifiers.
 
-Produced for Tufts University by Dave Mayo ([@pobocks])
+Produced for Tufts University by Dave Mayo ([pobocks](/pobocks))
 
 Copyright Language Pending but it's copyright Tufts
