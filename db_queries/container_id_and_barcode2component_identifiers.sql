@@ -1,7 +1,8 @@
 SET group_concat_max_len=995000;
 SELECT tc.id,
        tc.barcode,
-       concat('[', group_concat(concat('"', ao.component_id, '"')), ']')
+       concat('[', group_concat(concat('"', ao.component_id, '"')), ']'),
+       count(DISTINCT ao.root_record_id)
 FROM top_container tc
 JOIN top_container_link_rlshp tclr
   ON tclr.top_container_id = tc.id
@@ -14,4 +15,4 @@ JOIN archival_object ao
 WHERE tc.indicator LIKE 'data_value_missing%'
 GROUP BY tc.indicator
 ORDER BY tc.id, tc.barcode, ao.component_id
-INTO OUTFILE '~/id_barcode_aos.csv';
+INTO OUTFILE '/home/pobocks/blork/id_barcode_aos.csv';

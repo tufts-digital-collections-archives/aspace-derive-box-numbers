@@ -8,5 +8,10 @@ verify_ssl = true
 [packages]
 ArchivesSnake='*'
 jupyter='*'
+openpyxl = "*"
+more-itertools = "*"
+ipdb = "*"
+pymysql = "*"
+
 [requires]
 python_version = "3.5"
