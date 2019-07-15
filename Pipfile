@@ -12,6 +12,7 @@ openpyxl = "*"
 more-itertools = "*"
 ipdb = "*"
 pymysql = "*"
+regex = "*"
 
 [requires]
 python_version = "3.5"

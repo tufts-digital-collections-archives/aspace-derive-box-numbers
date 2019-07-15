@@ -2,6 +2,7 @@ SET group_concat_max_len=995000;
 SELECT tc.id,
        tc.barcode,
        concat('[', group_concat(concat('"', ao.component_id, '"')), ']'),
+       concat('[', group_concat(ao.id), ']'),
        count(DISTINCT ao.root_record_id)
 FROM top_container tc
 JOIN top_container_link_rlshp tclr
