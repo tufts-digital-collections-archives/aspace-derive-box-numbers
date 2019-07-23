@@ -3,12 +3,13 @@ import csv, json, sys
 csv.field_size_limit(sys.maxsize)
 
 from argparse import ArgumentParser, FileType
-from itertools import tee, chain, islice
+from itertools import chain, islice
+from types import SimpleNamespace as NS
 
 import regex as re
 import pymysql
 from getpass import getpass
-from more_itertools import peekable, one
+from more_itertools import peekable, one, chunked
 from openpyxl import load_workbook
 
 from asnake.logging import setup_logging, get_logger
@@ -22,6 +23,11 @@ ap.add_argument('--user', default='pobocks', help='MySQL user to run as when con
 ap.add_argument('--database', default='tuftschivesspace')
 ap.add_argument('--commit', action='store_true', help='actually make changes to ASpace')
 ap.add_argument('--logfile', default='map_box_numbers.log')
+ap.add_argument('--cached_aos', type=FileType('r'), help='source of cached archival object jsons')
+ap.add_argument('--cached_aos_save', type=FileType('w'), help='place to store cached archival object jsons')
+ap.add_argument('--cached_containers', type=FileType('r'), help='source of cached container jsons')
+ap.add_argument('--cached_containers_save', type=FileType('w'), help='place to store cached container jsons')
+
 
 def sniff_box_number(component_id):
     if '-' in component_id:
@@ -77,48 +83,81 @@ and transform it into a digital object linked to the correct AO.'''
     # QUESTIONS:
     # - is_representative value for instance?
     # - really make a dummy file_version?
-    ao_id = one(container_info['ao_ids'])
-    cid = one(container_info['component_ids'])
-    ao = repo.archival_objects(ao_id).json()
+    try:
+        ao_id = one(container_info['ao_ids'])
+        cid = one(container_info['component_ids'])
+    except Exception as e:
+        import ipdb;ipdb.set_trace()
+    ao = ao_jsons[ao_id]
     del ao['position'] # updating AO with position set causes issues
 
     digital_object = JM.digital_object(
         digital_object_id = 'tufts:{cid}'.format(cid=cid),
         title= ao['title'],
+        file_versions = [JM.file_version(
+            file_uri='example://no-url-available',
+            publish=True
+        )],
         user_defined = JM.user_defined(
             string_1 = 'Digital object location',
             text_1 = container_info['barcode']
         ),
         linked_instances = [{'ref': '/repositories/2/archival_objects/{ao_id}'.format(ao_id=ao_id)}]
     )
-
-    d_obj_res = aspace.post('repositories/2/digital_objects', json=digital_object)
+    log.info('create_digital_obj', digital_object=digital_object)
+    if args.commit:
+        d_obj_res = aspace.client.post('repositories/2/digital_objects', json=digital_object)
+    else: d_obj_res = NS(status_code=200, json = lambda: {'uri': 'PLACEHOLDER'}) # mock object if dry-run
     if d_obj_res.status_code == 200:
         do_uri = d_obj_res.json()['uri']
-        log.info('created_digital_object', component_id=cid, digital_object_uri=do_uri)
+        log.info('created_digital_object', component_id=cid, digital_object_uri=do_uri, for_real=args.commit)
         instance = JM.instance(
             instance_type='digital_object',
             digital_object={'ref': do_uri},
-            is_representative=True
+            is_representative=False
         )
         ao['instances'].append(instance)
-        ao_res = aspace.client.post(ao['uri'], json=ao)
-        if ao_res.status_code == 200:
-            log.info('updated_ao', component_id=cid, digital_object_uri=do_uri)
-            del_res = aspace.client.delete('/repositories/2/top_containers/{container_id}'.format(container_info))
-            if del_res.status_code == 200:
-                log.info('cleanup_dgb_container', **container_info)
+        if args.commit:
+            ao_res = aspace.client.post(ao['uri'], json=ao)
+            if ao_res.status_code == 200:
+                log.info('updated_ao', component_id=cid, ao=ao['uri'], digital_object_uri=do_uri)
+                del_res = aspace.client.delete('/repositories/2/top_containers/{}'.format(cid))
+                if del_res.status_code == 200:
+                    log.info('cleanup_dgb_container', **container_info)
+                else:
+                    log.error('FAIL cleanup_dgb_container', result=del_res.json(), **container_info)
             else:
-                log.error('FAIL cleanup_dgb_container', result=del_res.json(), **container_info)
+                log.error('FAIL updated_ao', component_id=cid, digital_object_uri=do_uri, result=ao_res.json())
+                del_res = aspace.client.delete(do_uri)
+                if del_res.status_code == 200:
+                    log.info('digital_object_cleanup', deleted=do_uri)
+                else:
+                    log.error('FAIL digital_object_cleanup', deleted=do_uri, result=del_res.json())
         else:
-            log.error('FAIL updated_ao', component_id=cid, digital_object_uri=do_uri, result=ao_res.json())
-            del_res = aspace.client.delete(do_uri)
-            if del_res.status_code == 200:
-                log.info('digital_object_cleanup', deleted=do_uri)
-            else:
-                log.error('FAIL digital_object_cleanup', deleted=do_uri, result=del_res.json())
+            log.info('SKIP updated_ao', component_id=cid, message='Since this is a dry run, we shan\'t update the AO')
+
     else:
         log.error('FAIL created_digital_object', component_id=cid, result=d_obj_res.json())
+
+def reindicate_container(row, new_indicator):
+    '''Change indicator for container'''
+    # container SHOULD be in jsons, but fallback to individual fetch if it's not for some reason?
+    container = container_jsons.get(row['container_id'], None)
+    if not container:
+        log.warning('WARN single_container_fetch', container_id = row['container_id'])
+        c_res = aspace.client.get('repositories/2/top_containers/{}'.format(row['container_id']))
+        if c_res.status_code == 200:
+            container = c_res.json()
+            log.info('single_container_fetch', container_id = row['container_id'])
+        else:
+            log.error('FAIL single_container_fetch', container_id = row['container_id'])
+
+    container['indicator'] = new_indicator
+    container_res = aspace.client.post(container['uri'], json=container)
+    if container_res.status_code == 200:
+        log.info('updated_container', container_id=row['container_id'])
+    else:
+        log.info('FAIL updated_container', container_id=row['container_id'], data=row, error=container_res.json())
 
 def map_rows(cursor):
     '''Transform JSON columns and boolean columns in resultset from MySQL'''
@@ -130,9 +169,11 @@ def map_rows(cursor):
 
 def unmap_row(row):
     '''Transform python -> JSON for aggregate columns'''
-    for field in 'ao_ids', 'component_ids':
-        row[field] = json.dumps(row[field])
-    return row
+    return {k:(json.dumps(v) if k in ('ao_ids', 'component_ids') else v) for k,v in row.items()}
+
+def chain_aos(for_aos):
+    for row in for_aos:
+        yield from row['ao_ids']
 
 if __name__ == '__main__':
     args = ap.parse_args()
@@ -144,7 +185,6 @@ if __name__ == '__main__':
 
     aspace = ASpace()
     log.info('aspace_connect')
-    repo = aspace.repositories(2) # Tufts only uses repo 2
 
     # note: fields match up to fields in MySQL query plus additional field for
     in_fields = ['container_id', 'barcode', 'component_ids', 'ao_ids', 'shared']
@@ -185,7 +225,47 @@ if __name__ == '__main__':
                WHERE tc.indicator LIKE 'data_value_missing%'
                GROUP BY tc.indicator
                ORDER BY tc.id, tc.barcode, ao.component_id''')
-        data = map_rows(db)
+        data = list(map_rows(db))
+
+        log.info('fetch_ao_jsons')
+        ao_jsons = {}
+        if args.cached_aos:
+            log.info('load_aos_from_cache')
+            with args.cached_aos as f:
+                ao_jsons = {int(k):v for k,v in json.load(f).items()}
+        else:
+            for chunk in chunked(sorted(chain_aos(data)), 250):
+                log.info('fetch_ao_chunk', chunk=chunk)
+                ao_res = aspace.client.get('repositories/2/archival_objects', params={'id_set': chunk})
+                if ao_res.status_code == 200:
+                    log.info('fetch_chunk_complete', chunk="{}-{}".format(chunk[0], chunk[-1]))
+                    for ao in ao_res.json():
+                        ao_id = int(ao['uri'][ao['uri'].rfind('/') + 1:])
+                        ao_jsons[ao_id] = ao
+            if args.cached_aos_save:
+                log.info('save_aos_to_cache')
+                with args.cached_aos_save as f:
+                    json.dump(ao_jsons, f)
+
+        if args.cached_containers:
+            log.info('load_containers_from_cache')
+            with args.cached_containers as f:
+                container_jsons = {int(k):v for k,v in json.load(f).items()}
+        else:
+            container_jsons = {}
+            for chunk in chunked(sorted(row['container_id'] for row in data), 250):
+                log.info('fetch_container_chunk', chunk=chunk)
+                c_res = aspace.client.get('repositories/2/archival_objects', params={'id_set': chunk})
+                if c_res.status_code == 200:
+                    log.info('fetch_chunk_complete', chunk="{}-{}".format(chunk[0], chunk[-1]))
+                    for c in c_res.json():
+                        c_id = int(c['uri'][c['uri'].rfind('/') + 1:])
+                        container_jsons[c_id] = c
+            if args.cached_containers_save:
+                log.info('save_containers_to_cache')
+                with args.cached_containers_save as f:
+                    json.dump(container_jsons, f)
+
         log.info('data_retrieved')
 
         for row in data:
@@ -193,15 +273,15 @@ if __name__ == '__main__':
                 log.info('process_digital_barcode')
                 # handle things that ought to be digital barcodes
                 w_dgb.writerow(unmap_row(row))
-                if args.commit:
-                    convert_container_to_digital_object(row)
+                convert_container_to_digital_object(row)
             else:
                 log.info('process_real_container')
-                row['proposed_box_number'] = box_no_or_bust(row)
+                new_indicator = row['proposed_box_number'] = box_no_or_bust(row)
 
                 w_pbn.writerow(unmap_row(row))
-                if args.commit:
+                if args.commit and new_indicator not in {'Green Barcode', 'Cannot Assign'}:
                     # do the dang thing for common case
-                    pass
+                    reindicate_container(row, new_indicator)
+
 
         log.info('end')
