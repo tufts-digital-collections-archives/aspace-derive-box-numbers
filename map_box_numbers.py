@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import csv, json, sys
+import csv, json, sys, os
 csv.field_size_limit(sys.maxsize)
 
 from argparse import ArgumentParser, FileType
@@ -16,11 +16,22 @@ from asnake.logging import setup_logging, get_logger
 from asnake.aspace import ASpace
 from asnake.jsonmodel import JM
 
+def manual_mappings(filename):
+    sheet = iter(one(load_workbook(os.path.expanduser(filename))))
+    next(sheet) # skip headers
+    return {row[0].value:row[1].value for row in sheet if row[0].value}
+
+def omissions(filename):
+    sheet = iter(one(load_workbook(os.path.expanduser(filename))))
+    next(sheet) # skip headers
+    return {row[0].value for row in sheet if row[0].value}
 
 ap = ArgumentParser(description="Script to map box numbers to containers based on AO component names")
 ap.add_argument('--host', default='localhost', help="MySQL host with ASpace database")
 ap.add_argument('--user', default='pobocks', help='MySQL user to run as when connecting to ASpace database')
 ap.add_argument('--database', default='tuftschivesspace')
+ap.add_argument('--omissions', type=omissions, default=set(), help="Single column Excel file with list of barcodes of cont")
+ap.add_argument('--manual_mappings', type=manual_mappings, default={}, help='two column Excel file with mapping from barcode to indicator')
 ap.add_argument('--commit', action='store_true', help='actually make changes to ASpace')
 ap.add_argument('--logfile', default='map_box_numbers.log')
 ap.add_argument('--cached_aos', type=FileType('r'), help='source of cached archival object jsons')
@@ -28,22 +39,19 @@ ap.add_argument('--cached_aos_save', type=FileType('w'), help='place to store ca
 ap.add_argument('--cached_containers', type=FileType('r'), help='source of cached container jsons')
 ap.add_argument('--cached_containers_save', type=FileType('w'), help='place to store cached container jsons')
 
-
+normal = re.compile(r'^[^.]{5}(?:\.\d{3})*\.(?P<box_no>\d{3})\.\d{5}$')
+box_level = re.compile(r'^[^.]{5}(?:\.\d{3})*\.(?P<penultimate>\d{3})\.(?P<last>\d{3})$')
+weird_MS004 = re.compile(r'^MS004\.\d{3}(?:\.\d{3})*\.(?P<box_no>\d{3})\.\d{4}\.\d{2}.\d{4}$')
 def sniff_box_number(component_id):
     if '-' in component_id:
-        return "probable Green Barcode"
-    cid = component_id.split('.')
-    if len(cid[-1]) != 5 or\
-       not cid[-1].isnumeric() or\
-       len(cid) < 4:
-        return "Cannot Assign"
-    it = peekable(cid)
-    next(it) # skip collection id
+        return {"box_no": "Green Barcode"}
+    m = normal.match(component_id) or\
+        box_level.match(component_id) or\
+        weird_MS004.match(component_id)
+    if m:
+        return m.groupdict()
 
-    curr = None
-    while len(it.peek()) < 5:
-        curr = next(it)
-    return curr
+    return {"box_no": "Cannot Assign"}
 
 def split(string, sep="."):
     return str.split(string, sep)
@@ -51,6 +59,11 @@ def split(string, sep="."):
 shared_idx = 1
 def box_no_or_bust(row):
     global shared_idx
+    if row['barcode'] in args.omissions:
+        return 'Omitted'
+    if row['barcode'] in args.manual_mappings:
+        return args.manual_mappings[row['barcode']]
+
     indicator_prefix = ''
     if row['barcode'].endswith('g'):
         return 'Green Barcode'
@@ -61,10 +74,22 @@ def box_no_or_bust(row):
     if row['barcode'].endswith('b'):
         indicator_prefix = 'Volume '
 
-    potential_numbers = set(map(sniff_box_number, row['component_ids']))
+    sniffed = [sniff_box_number(cid) for cid in  row['component_ids']]
     try:
-        box_no = one(potential_numbers)
-        return indicator_prefix + box_no
+        # normal, green bc dashes, or cannot assign
+        if all("box_no" in mdict for mdict in sniffed):
+            box_no = one(set(mdict['box_no'] for mdict in sniffed))
+
+        # Fake box level
+        elif all("last" in mdict for mdict in sniffed):
+            if all(mdict['last'] == '001' for mdict in sniffed):
+                box_no = one(set(mdict['penultimate'] for mdict in sniffed))
+            else:
+                box_no = one(set(mdict['last'] for mdict in sniffed))
+        else:
+            return "Cannot Assign"
+
+        return indicator_prefix + str(int(box_no))
     except ValueError:
         return "Cannot Assign"
 
@@ -121,7 +146,7 @@ and transform it into a digital object linked to the correct AO.'''
             ao_res = aspace.client.post(ao['uri'], json=ao)
             if ao_res.status_code == 200:
                 log.info('updated_ao', component_id=cid, ao=ao['uri'], digital_object_uri=do_uri)
-                del_res = aspace.client.delete('/repositories/2/top_containers/{}'.format(cid))
+                del_res = aspace.client.delete('/repositories/2/top_containers/{}'.format(container_info['container_id']))
                 if del_res.status_code == 200:
                     log.info('cleanup_dgb_container', **container_info)
                 else:
@@ -279,7 +304,7 @@ if __name__ == '__main__':
                 new_indicator = row['proposed_box_number'] = box_no_or_bust(row)
 
                 w_pbn.writerow(unmap_row(row))
-                if args.commit and new_indicator not in {'Green Barcode', 'Cannot Assign'}:
+                if args.commit and new_indicator not in {'Green Barcode', 'Cannot Assign', 'Omitted'}:
                     # do the dang thing for common case
                     reindicate_container(row, new_indicator)
 
