@@ -39,7 +39,7 @@ ap.add_argument('--cached_aos_save', type=FileType('w'), help='place to store ca
 ap.add_argument('--cached_containers', type=FileType('r'), help='source of cached container jsons')
 ap.add_argument('--cached_containers_save', type=FileType('w'), help='place to store cached container jsons')
 
-normal = re.compile(r'^[^.]{5}(?:\.\d{3})*\.(?P<box_no>\d{3})\.\d{5}$')
+normal = re.compile(r'^[^.]{5}(?:\.\d{3})*\.(?P<box_no>\d{3})\.\d{5}(?:\.\d{5})?$')
 box_level = re.compile(r'^[^.]{5}(?:\.\d{3})*\.(?P<penultimate>\d{3})\.(?P<last>\d{3})$')
 weird_MS004 = re.compile(r'^MS004\.\d{3}(?:\.\d{3})*\.(?P<box_no>\d{3})\.\d{4}\.\d{2}.\d{4}$')
 def sniff_box_number(component_id):
