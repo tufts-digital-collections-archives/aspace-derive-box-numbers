@@ -3,12 +3,14 @@ import csv, json, sys, os
 csv.field_size_limit(sys.maxsize)
 
 from argparse import ArgumentParser, FileType
+from collections import defaultdict
+from getpass import getpass
 from itertools import chain, islice
 from types import SimpleNamespace as NS
 
 import regex as re
 import pymysql
-from getpass import getpass
+
 from more_itertools import peekable, one, chunked
 from openpyxl import load_workbook
 
@@ -39,9 +41,9 @@ ap.add_argument('--cached_aos_save', type=FileType('w'), help='place to store ca
 ap.add_argument('--cached_containers', type=FileType('r'), help='source of cached container jsons')
 ap.add_argument('--cached_containers_save', type=FileType('w'), help='place to store cached container jsons')
 
-normal = re.compile(r'^[^.]{5}(?:\.\d{3})*\.(?P<box_no>\d{3})\.\d{5}(?:\.\d{5})?$')
-box_level = re.compile(r'^[^.]{5}(?:\.\d{3})*\.(?P<penultimate>\d{3})\.(?P<last>\d{3})$')
-weird_MS004 = re.compile(r'^MS004\.\d{3}(?:\.\d{3})*\.(?P<box_no>\d{3})\.\d{4}\.\d{2}.\d{4}$')
+normal = re.compile(r'^(?P<coll_id>[^.]{5})\.(?P<series>\d{3})(?:\.\d{3})*\.(?P<box_no>\d{3})\.\d{5}(?:\.\d{5})?$')
+box_level = re.compile(r'^(?P<coll_id>[^.]{5})\.(?P<series>\d{3})(?:\.\d{3})*\.(?P<penultimate>\d{3})\.(?P<last>\d{3})$')
+weird_MS004 = re.compile(r'^(?P<coll_id>MS004)\.(?P<series>\d{3})(?:\.\d{3})*\.(?P<box_no>\d{3})\.\d{4}\.\d{2}.\d{4}$')
 def sniff_box_number(component_id):
     if '-' in component_id:
         return {"box_no": "Green Barcode"}
@@ -76,16 +78,28 @@ def box_no_or_bust(row):
 
     sniffed = [sniff_box_number(cid) for cid in  row['component_ids']]
     try:
+        # boxes shared by _series_
+        if all('series' in mdict for mdict in sniffed) and\
+           len({mdict["series"] for mdict in sniffed}) > 1:
+            coll_id = one({mdict['coll_id'] for mdict in sniffed})
+            coll_name = coll_id2coll_name[coll_id]
+            box_no = "{coll_name} Shared {coll_idx}".format(
+                coll_name=coll_name,
+                coll_idx=coll_shared_box_idxs[coll_id])
+            coll_shared_box_idxs[coll_id] += 1
+            return box_no
+
+
         # normal, green bc dashes, or cannot assign
         if all("box_no" in mdict for mdict in sniffed):
-            box_no = one(set(mdict['box_no'] for mdict in sniffed))
+            box_no = one({mdict['box_no'] for mdict in sniffed})
 
         # Fake box level
         elif all("last" in mdict for mdict in sniffed):
             if all(mdict['last'] == '001' for mdict in sniffed):
-                box_no = one(set(mdict['penultimate'] for mdict in sniffed))
+                box_no = one({mdict['penultimate'] for mdict in sniffed})
             else:
-                box_no = one(set(mdict['last'] for mdict in sniffed))
+                box_no = one({mdict['last'] for mdict in sniffed})
         else:
             return "Cannot Assign"
 
@@ -231,6 +245,12 @@ if __name__ == '__main__':
 
         shared_idx = 1
 
+        log.info('load_coll_id2coll_name')
+        db.execute('''SELECT identifier, title FROM resource''')
+        coll_id2coll_name = {json.loads(row["identifier"])[0]:row["title"] for row in db.fetchall()}
+        coll_shared_box_idxs = {k:1 for k in coll_id2coll_name}
+
+        log.info('load_data')
         db.execute('''SET group_concat_max_len=995000''')
         db.execute(
             '''SELECT tc.id as container_id,
@@ -251,6 +271,7 @@ if __name__ == '__main__':
                GROUP BY tc.indicator
                ORDER BY tc.id, tc.barcode, ao.component_id''')
         data = list(map_rows(db))
+        log.info('load_data_complete')
 
         log.info('fetch_ao_jsons')
         ao_jsons = {}
@@ -271,7 +292,9 @@ if __name__ == '__main__':
                 log.info('save_aos_to_cache')
                 with args.cached_aos_save as f:
                     json.dump(ao_jsons, f)
+        log.info('fetch_ao_jsons_complete')
 
+        log.info('load_containers')
         if args.cached_containers:
             log.info('load_containers_from_cache')
             with args.cached_containers as f:
@@ -291,6 +314,7 @@ if __name__ == '__main__':
                 with args.cached_containers_save as f:
                     json.dump(container_jsons, f)
 
+        log.info('load_containers_complete')
         log.info('data_retrieved')
 
         for row in data:
