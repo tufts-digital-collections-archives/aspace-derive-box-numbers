@@ -8,15 +8,17 @@ This script's operation is specifically keyed to details of Tufts University's d
 
 The requirements for this script are listed in [Pipfile](https://github.com/tufts-digital-collections-archives/aspace-derive-box-numbers/blob/master/Pipfile).  If you're using [Pipenv](https://docs.pipenv.org/en/latest/) to manage dependencies, you can install them by running:
 
-```shell
+```
 pipenv install
 ```
 
 And run the script as:
 
-```shell
+```
 pipenv run map_box_numbers.py ARGUMENTS
 ```
+
+Alternatively, you can also install dependencies from the provided `requirements.txt` file.
 
 Additionally, you will need to configure ArchivesSnake via a YAML configuration file as per the instructions [here](https://github.com/archivesspace-labs/ArchivesSnake/#configuration), providing a base url, username, and password for a user that has the ability to edit and create repository records. (The script assumes a single repository with id = 2.)  You will also need to provide database access to the MySQL database of your ArchivesSpace instance.  Host name, user, and database name can be passed in as arguments to the script, but you will be prompted to input the password, as it is not secure to include it within the command.
 
