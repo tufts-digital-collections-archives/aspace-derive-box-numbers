@@ -6,7 +6,7 @@ This script's operation is specifically keyed to details of Tufts University's d
 
 ## Requirements
 
-The requirements for this script are listed in [Pipfile].  If you're using [Pipenv](https://docs.pipenv.org/en/latest/) to manage dependencies, you can install them by running:
+The requirements for this script are listed in [Pipfile](https://github.com/tufts-digital-collections-archives/aspace-derive-box-numbers/blob/master/Pipfile).  If you're using [Pipenv](https://docs.pipenv.org/en/latest/) to manage dependencies, you can install them by running:
 
 ```shell
 pipenv install
@@ -64,6 +64,6 @@ optional arguments:
                         place to store cached container jsons
 ```
 
-Produced for Tufts University by Dave Mayo ([pobocks](https://github.com/pobocks).
+Produced for Tufts University by Dave Mayo ([pobocks](https://github.com/pobocks)).
 
 Copyright language pending, but basically, it's copyright Tufts.
