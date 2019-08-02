@@ -1,0 +1,6 @@
+more_itertools==4.3.0
+openpyxl==2.6.2
+ArchivesSnake==0.7.1
+ipdb==0.12.2
+pymysql==0.9.3
+regex==2019.06.08
