@@ -119,9 +119,6 @@ def common_prefix(component_ids):
 def convert_container_to_digital_object(container_info):
     '''Take a row representing a DGB (Digital Green Barcode) container and it's archival objects
 and transform it into a digital object linked to the correct AO.'''
-    # QUESTIONS:
-    # - is_representative value for instance?
-    # - really make a dummy file_version?
     try:
         ao_id = one(container_info['ao_ids'])
         cid = one(container_info['component_ids'])
