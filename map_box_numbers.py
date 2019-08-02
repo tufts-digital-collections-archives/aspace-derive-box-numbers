@@ -29,13 +29,13 @@ def omissions(filename):
     return {row[0].value for row in sheet if row[0].value}
 
 ap = ArgumentParser(description="Script to map box numbers to containers based on AO component names")
-ap.add_argument('--host', default='localhost', help="MySQL host with ASpace database")
+ap.add_argument('--host', default='localhost', help="host of ASpace database")
 ap.add_argument('--user', default='pobocks', help='MySQL user to run as when connecting to ASpace database')
-ap.add_argument('--database', default='tuftschivesspace')
-ap.add_argument('--omissions', type=omissions, default=set(), help="Single column Excel file with list of barcodes of cont")
+ap.add_argument('--database', default='tuftschivesspace', help="Name of MySQL database")
+ap.add_argument('--omissions', type=omissions, default=set(), help="Single column Excel file with list of container barcodes to ignore")
 ap.add_argument('--manual_mappings', type=manual_mappings, default={}, help='two column Excel file with mapping from barcode to indicator')
 ap.add_argument('--commit', action='store_true', help='actually make changes to ASpace')
-ap.add_argument('--logfile', default='map_box_numbers.log')
+ap.add_argument('--logfile', default='map_box_numbers.log', help='path to print log to')
 ap.add_argument('--cached_aos', type=FileType('r'), help='source of cached archival object jsons')
 ap.add_argument('--cached_aos_save', type=FileType('w'), help='place to store cached archival object jsons')
 ap.add_argument('--cached_containers', type=FileType('r'), help='source of cached container jsons')
