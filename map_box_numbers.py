@@ -82,8 +82,7 @@ def box_no_or_bust(row):
         if all('series' in mdict for mdict in sniffed) and\
            len({mdict["series"] for mdict in sniffed}) > 1:
             coll_id = one({mdict['coll_id'] for mdict in sniffed})
-            coll_name = coll_id2coll_name[coll_id]
-            box_no = "{coll_name} Shared {coll_idx}".format(
+            box_no = "{coll_id} Shared {coll_idx}".format(
                 coll_name=coll_name,
                 coll_idx=coll_shared_box_idxs[coll_id])
             coll_shared_box_idxs[coll_id] += 1
@@ -187,11 +186,11 @@ def reindicate_container(row, new_indicator):
             log.info('single_container_fetch', container_id = row['container_id'])
         else:
             log.error('FAIL single_container_fetch', container_id = row['container_id'])
-
+    old_indicator = container['indicator']
     container['indicator'] = new_indicator
     container_res = aspace.client.post(container['uri'], json=container)
     if container_res.status_code == 200:
-        log.info('updated_container', container_id=row['container_id'])
+        log.info('updated_container', new_indicator=new_indicator, old_indicator=old_indicator, container_id=row['container_id'])
     else:
         log.info('FAIL updated_container', container_id=row['container_id'], data=row, error=container_res.json())
 
@@ -242,10 +241,9 @@ if __name__ == '__main__':
 
         shared_idx = 1
 
-        log.info('load_coll_id2coll_name')
-        db.execute('''SELECT identifier, title FROM resource''')
-        coll_id2coll_name = {json.loads(row["identifier"])[0]:row["title"] for row in db.fetchall()}
-        coll_shared_box_idxs = {k:1 for k in coll_id2coll_name}
+        log.info('load_coll_shared_box_idxs')
+        db.execute('''SELECT identifier FROM resource''')
+        coll_shared_box_idxs = {json.loads(row["identifier"])[0]:1 for row in db.fetchall()}
 
         log.info('load_data')
         db.execute('''SET group_concat_max_len=995000''')
@@ -288,7 +286,7 @@ if __name__ == '__main__':
             if args.cached_aos_save:
                 log.info('save_aos_to_cache')
                 with args.cached_aos_save as f:
-                    json.dump(ao_jsons, f)
+                    json.dump(ao_jsons, f, indent=4)
         log.info('fetch_ao_jsons_complete')
 
         log.info('load_containers')
@@ -300,7 +298,7 @@ if __name__ == '__main__':
             container_jsons = {}
             for chunk in chunked(sorted(row['container_id'] for row in data), 250):
                 log.info('fetch_container_chunk', chunk=chunk)
-                c_res = aspace.client.get('repositories/2/archival_objects', params={'id_set': chunk})
+                c_res = aspace.client.get('repositories/2/top_containers', params={'id_set': chunk})
                 if c_res.status_code == 200:
                     log.info('fetch_chunk_complete', chunk="{}-{}".format(chunk[0], chunk[-1]))
                     for c in c_res.json():
@@ -309,7 +307,7 @@ if __name__ == '__main__':
             if args.cached_containers_save:
                 log.info('save_containers_to_cache')
                 with args.cached_containers_save as f:
-                    json.dump(container_jsons, f)
+                    json.dump(container_jsons, f, indent=4)
 
         log.info('load_containers_complete')
         log.info('data_retrieved')
