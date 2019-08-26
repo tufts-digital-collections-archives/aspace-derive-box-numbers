@@ -3,7 +3,7 @@ import csv, json, sys, os
 csv.field_size_limit(sys.maxsize)
 
 from argparse import ArgumentParser, FileType
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 from getpass import getpass
 from itertools import chain, islice
 from types import SimpleNamespace as NS
@@ -21,7 +21,7 @@ from asnake.jsonmodel import JM
 def manual_mappings(filename):
     sheet = iter(one(load_workbook(os.path.expanduser(filename))))
     next(sheet) # skip headers
-    return {row[0].value:row[1].value for row in sheet if row[0].value}
+    return {str(row[0].value):str(row[1].value) for row in sheet if row[0].value}
 
 def omissions(filename):
     sheet = iter(one(load_workbook(os.path.expanduser(filename))))
@@ -83,7 +83,7 @@ def box_no_or_bust(row):
            len({mdict["series"] for mdict in sniffed}) > 1:
             coll_id = one({mdict['coll_id'] for mdict in sniffed})
             box_no = "{coll_id} Shared {coll_idx}".format(
-                coll_name=coll_name,
+                coll_id=coll_id,
                 coll_idx=coll_shared_box_idxs[coll_id])
             coll_shared_box_idxs[coll_id] += 1
             return box_no
@@ -231,7 +231,7 @@ if __name__ == '__main__':
 
     with open('proposed_box_numbers.csv', 'w') as pbn,\
          open('digital_object_conversion.csv', 'w') as dgb,\
-         conn.cursor() as db:
+         open('dupe_report.csv', 'w') as dupe_report:
 
         w_pbn = csv.DictWriter(pbn, dialect='excel-tab', fieldnames=out_fields)
         w_pbn.writeheader()
@@ -240,77 +240,78 @@ if __name__ == '__main__':
         w_dgb.writeheader()
 
         shared_idx = 1
-
         log.info('load_coll_shared_box_idxs')
-        db.execute('''SELECT identifier FROM resource''')
-        coll_shared_box_idxs = {json.loads(row["identifier"])[0]:1 for row in db.fetchall()}
+        with conn:
+            db = conn.cursor()
+            db.execute('''SELECT identifier FROM resource''')
+            coll_shared_box_idxs = {json.loads(row["identifier"])[0]:1 for row in db.fetchall()}
 
-        log.info('load_data')
-        db.execute('''SET group_concat_max_len=995000''')
-        db.execute(
-            '''SELECT tc.id as container_id,
-                      tc.barcode as barcode,
-                      concat('[', group_concat(concat('"', ao.component_id, '"')), ']') as component_ids,
-                      concat('[', group_concat(ao.id), ']') as ao_ids,
-                      count(DISTINCT ao.root_record_id) as shared
-               FROM top_container tc
-               JOIN top_container_link_rlshp tclr
-                 ON tclr.top_container_id = tc.id
-               JOIN sub_container s
-                 ON s.id = tclr.sub_container_id
-               JOIN instance i
-                 ON s.instance_id = i.id
-               JOIN archival_object ao
-                 ON ao.id = i.archival_object_id
-               WHERE tc.indicator LIKE 'data_value_missing%'
-               GROUP BY tc.indicator
-               ORDER BY tc.id, tc.barcode, ao.component_id''')
-        data = list(map_rows(db))
-        log.info('load_data_complete')
+            log.info('load_data')
+            db.execute('''SET group_concat_max_len=995000''')
+            db.execute(
+                '''SELECT tc.id as container_id,
+                          tc.barcode as barcode,
+                          concat('[', group_concat(concat('"', ao.component_id, '"')), ']') as component_ids,
+                          concat('[', group_concat(ao.id), ']') as ao_ids,
+                          count(DISTINCT ao.root_record_id) as shared
+                   FROM top_container tc
+                   JOIN top_container_link_rlshp tclr
+                     ON tclr.top_container_id = tc.id
+                   JOIN sub_container s
+                     ON s.id = tclr.sub_container_id
+                   JOIN instance i
+                     ON s.instance_id = i.id
+                   JOIN archival_object ao
+                     ON ao.id = i.archival_object_id
+                   WHERE tc.indicator LIKE 'data_value_missing%'
+                   GROUP BY tc.indicator
+                   ORDER BY tc.id, tc.barcode, ao.component_id''')
+            data = list(map_rows(db))
+            log.info('load_data_complete')
 
-        log.info('fetch_ao_jsons')
-        ao_jsons = {}
-        if args.cached_aos:
-            log.info('load_aos_from_cache')
-            with args.cached_aos as f:
-                ao_jsons = {int(k):v for k,v in json.load(f).items()}
-        else:
-            for chunk in chunked(sorted(chain_aos(data)), 250):
-                log.info('fetch_ao_chunk', chunk=chunk)
-                ao_res = aspace.client.get('repositories/2/archival_objects', params={'id_set': chunk})
-                if ao_res.status_code == 200:
-                    log.info('fetch_chunk_complete', chunk="{}-{}".format(chunk[0], chunk[-1]))
-                    for ao in ao_res.json():
-                        ao_id = int(ao['uri'][ao['uri'].rfind('/') + 1:])
-                        ao_jsons[ao_id] = ao
-            if args.cached_aos_save:
-                log.info('save_aos_to_cache')
-                with args.cached_aos_save as f:
-                    json.dump(ao_jsons, f, indent=4)
-        log.info('fetch_ao_jsons_complete')
+            log.info('fetch_ao_jsons')
+            ao_jsons = {}
+            if args.cached_aos:
+                log.info('load_aos_from_cache')
+                with args.cached_aos as f:
+                    ao_jsons = {int(k):v for k,v in json.load(f).items()}
+            else:
+                for chunk in chunked(sorted(chain_aos(data)), 250):
+                    log.info('fetch_ao_chunk', chunk=chunk)
+                    ao_res = aspace.client.get('repositories/2/archival_objects', params={'id_set': chunk})
+                    if ao_res.status_code == 200:
+                        log.info('fetch_chunk_complete', chunk="{}-{}".format(chunk[0], chunk[-1]))
+                        for ao in ao_res.json():
+                            ao_id = int(ao['uri'][ao['uri'].rfind('/') + 1:])
+                            ao_jsons[ao_id] = ao
+                if args.cached_aos_save:
+                    log.info('save_aos_to_cache')
+                    with args.cached_aos_save as f:
+                        json.dump(ao_jsons, f, indent=4)
+            log.info('fetch_ao_jsons_complete')
 
-        log.info('load_containers')
-        if args.cached_containers:
-            log.info('load_containers_from_cache')
-            with args.cached_containers as f:
-                container_jsons = {int(k):v for k,v in json.load(f).items()}
-        else:
-            container_jsons = {}
-            for chunk in chunked(sorted(row['container_id'] for row in data), 250):
-                log.info('fetch_container_chunk', chunk=chunk)
-                c_res = aspace.client.get('repositories/2/top_containers', params={'id_set': chunk})
-                if c_res.status_code == 200:
-                    log.info('fetch_chunk_complete', chunk="{}-{}".format(chunk[0], chunk[-1]))
-                    for c in c_res.json():
-                        c_id = int(c['uri'][c['uri'].rfind('/') + 1:])
-                        container_jsons[c_id] = c
-            if args.cached_containers_save:
-                log.info('save_containers_to_cache')
-                with args.cached_containers_save as f:
-                    json.dump(container_jsons, f, indent=4)
+            log.info('load_containers')
+            if args.cached_containers:
+                log.info('load_containers_from_cache')
+                with args.cached_containers as f:
+                    container_jsons = {int(k):v for k,v in json.load(f).items()}
+            else:
+                container_jsons = {}
+                for chunk in chunked(sorted(row['container_id'] for row in data), 250):
+                    log.info('fetch_container_chunk', chunk=chunk)
+                    c_res = aspace.client.get('repositories/2/top_containers', params={'id_set': chunk})
+                    if c_res.status_code == 200:
+                        log.info('fetch_chunk_complete', chunk="{}-{}".format(chunk[0], chunk[-1]))
+                        for c in c_res.json():
+                            c_id = int(c['uri'][c['uri'].rfind('/') + 1:])
+                            container_jsons[c_id] = c
+                if args.cached_containers_save:
+                    log.info('save_containers_to_cache')
+                    with args.cached_containers_save as f:
+                        json.dump(container_jsons, f, indent=4)
 
-        log.info('load_containers_complete')
-        log.info('data_retrieved')
+            log.info('load_containers_complete')
+            log.info('data_retrieved')
 
         for row in data:
             if row['barcode'].startswith('DGB'):
@@ -326,6 +327,77 @@ if __name__ == '__main__':
                 if args.commit and new_indicator not in {'Green Barcode', 'Cannot Assign', 'Omitted'}:
                     # do the dang thing for common case
                     reindicate_container(row, new_indicator)
+
+        if args.commit:
+            with conn:
+                db = conn.cursor()
+                db.execute('''SET group_concat_max_len=995000''')
+                db.execute('''SELECT r.id,
+                                     substr(ao.component_id, 7, 3) as series,
+                                     max(CAST(regexp_substr(tc.indicator, '[0123456789]+$') AS integer)) AS max_indicator
+                               FROM resource r
+                               JOIN archival_object ao ON ao.root_record_id = r.id
+                               JOIN instance i ON i.archival_object_id = ao.id
+                               JOIN sub_container sc ON i.id = sc.instance_id
+                               JOIN top_container_link_rlshp tclr ON tclr.sub_container_id = sc.id
+                               JOIN top_container tc ON tc.id = tclr.top_container_id
+                               WHERE tc.indicator REGEXP '[0123456789]+$'
+                               AND tc.indicator REGEXP '^[0123456789;, -]+$'
+                               GROUP BY r.id, series
+                               HAVING max_indicator > 0
+                               ORDER BY r.id''')
+
+                series2idx = {"{}.{}".format(el['id'], el['series']):el['max_indicator'] for el in db.fetchall()}
+
+                db.execute('''SELECT r.id,
+                                      substr(r.identifier, 3, 5) as identifier,
+                                      substr(ao.component_id, 7, 3) as series,
+                                      tc.indicator,
+                                      concat('{', group_concat(DISTINCT concat('"', tc.id, '": "', tc.barcode, '"')), '}') AS id2bc
+                               FROM resource r
+                               JOIN archival_object ao ON ao.root_record_id = r.id
+                               JOIN instance i ON i.archival_object_id = ao.id
+                               JOIN sub_container sc ON i.id = sc.instance_id
+                               JOIN top_container_link_rlshp tclr ON tclr.sub_container_id = sc.id
+                               JOIN top_container tc ON tc.id = tclr.top_container_id
+                               GROUP BY r.id, series, tc.indicator
+                               HAVING count(DISTINCT tc.id) > 1 ORDER BY r.id, series, tc.id''')
+
+                w_dupe = csv.DictWriter(dupe_report, dialect='excel-tab', fieldnames=['Barcode', 'New Indicator'])
+                w_dupe.writeheader()
+
+                dupe_id2indicator = {}
+                for row in db.fetchall():
+                    try:
+                        dupes = iter(json.loads(row['id2bc'].replace('\\', '\\\\'), object_pairs_hook=OrderedDict).items())
+                    except json.decoder.JSONDecodeError as e:
+                        log.warning('FAILED to process dupes for resource', data=row)
+                    first = next(dupes) # first one isn't a dupe! It gets to keep its indicator
+                    for cid, bc in dupes:
+                        res = aspace.client.get('repositories/2/top_containers/{}'.format(cid))
+                        if res.status_code == 200:
+                            container = res.json()
+                            if not container['indicator'].isnumeric():
+                                log.warning('FAILED duplicate_indicator is not numeric', container_id=cid, indicator=container['indicator'])
+                                continue
+                        else:
+                            log.warning('FAILED to fetch duplicate top container {}'.format(cid), status=res.status_code, response=ress.json())
+                            continue
+                        s2i_key = "{}.{}".format(row['id'], row['series'])
+                        if not s2i_key in series2idx:
+                            log.warning('FAILED to find series2idx', key=s2i_key, container_id=cid, barcode=bc)
+                            continue
+                        series2idx[s2i_key] += 1
+                        indicator = series2idx[s2i_key]
+                        dupe_id2indicator[cid] = indicator
+                        w_dupe.writerow({"Barcode": bc, "New Indicator": indicator})
+
+                        container['indicator'] = str(indicator)
+                        post_res = aspace.client.post(container['uri'], json=container)
+                        if post_res.status_code == 200:
+                            log.info('DUPE SORTED', barcode=bc, container_id = cid, new_indicator = indicator)
+                        else:
+                            log.warning('FAILED to sort out duplicate', barcode=bc, container_id = cid, new_indicator = indicator, status=post_res.status_code, body=post_res.json())
 
 
         log.info('end')
