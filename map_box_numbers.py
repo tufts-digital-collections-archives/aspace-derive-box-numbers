@@ -106,15 +106,6 @@ def box_no_or_bust(row):
     except ValueError:
         return "Cannot Assign"
 
-def common_prefix(component_ids):
-    pref = []
-    for segments in zip(map(split, component_ids)):
-        if len(set(segments)) == 1:
-            pref.append(segments[0])
-        else:
-            break
-    return pref
-
 def convert_container_to_digital_object(container_info):
     '''Take a row representing a DGB (Digital Green Barcode) container and it's archival objects
 and transform it into a digital object linked to the correct AO.'''
@@ -225,13 +216,12 @@ if __name__ == '__main__':
     in_fields = ['container_id', 'barcode', 'component_ids', 'ao_ids', 'shared']
     out_fields = (*in_fields[0:2], 'proposed_box_number', *in_fields[2:],)
 
-    conn = pymysql.connect(host=args.host, user=args.user, database=args.database, cursorclass=pymysql.cursors.DictCursor, password=
-                           getpass("Please enter MySQL password for {}: ".format(args.user)))
+    conn = pymysql.connect(host=args.host, user=args.user, database=args.database, cursorclass=pymysql.cursors.DictCursor,
+                           password=getpass("Please enter MySQL password for {}: ".format(args.user)))
     log.info('mysql_connect')
 
     with open('proposed_box_numbers.csv', 'w') as pbn,\
-         open('digital_object_conversion.csv', 'w') as dgb,\
-         open('dupe_report.csv', 'w') as dupe_report:
+         open('digital_object_conversion.csv', 'w') as dgb:
 
         w_pbn = csv.DictWriter(pbn, dialect='excel-tab', fieldnames=out_fields)
         w_pbn.writeheader()
@@ -327,77 +317,5 @@ if __name__ == '__main__':
                 if args.commit and new_indicator not in {'Green Barcode', 'Cannot Assign', 'Omitted'}:
                     # do the dang thing for common case
                     reindicate_container(row, new_indicator)
-
-        if args.commit:
-            with conn:
-                db = conn.cursor()
-                db.execute('''SET group_concat_max_len=995000''')
-                db.execute('''SELECT r.id,
-                                     substr(ao.component_id, 7, 3) as series,
-                                     max(CAST(regexp_substr(tc.indicator, '[0123456789]+$') AS integer)) AS max_indicator
-                               FROM resource r
-                               JOIN archival_object ao ON ao.root_record_id = r.id
-                               JOIN instance i ON i.archival_object_id = ao.id
-                               JOIN sub_container sc ON i.id = sc.instance_id
-                               JOIN top_container_link_rlshp tclr ON tclr.sub_container_id = sc.id
-                               JOIN top_container tc ON tc.id = tclr.top_container_id
-                               WHERE tc.indicator REGEXP '[0123456789]+$'
-                               AND tc.indicator REGEXP '^[0123456789;, -]+$'
-                               GROUP BY r.id, series
-                               HAVING max_indicator > 0
-                               ORDER BY r.id''')
-
-                series2idx = {"{}.{}".format(el['id'], el['series']):el['max_indicator'] for el in db.fetchall()}
-
-                db.execute('''SELECT r.id,
-                                      substr(r.identifier, 3, 5) as identifier,
-                                      substr(ao.component_id, 7, 3) as series,
-                                      tc.indicator,
-                                      concat('{', group_concat(DISTINCT concat('"', tc.id, '": "', tc.barcode, '"')), '}') AS id2bc
-                               FROM resource r
-                               JOIN archival_object ao ON ao.root_record_id = r.id
-                               JOIN instance i ON i.archival_object_id = ao.id
-                               JOIN sub_container sc ON i.id = sc.instance_id
-                               JOIN top_container_link_rlshp tclr ON tclr.sub_container_id = sc.id
-                               JOIN top_container tc ON tc.id = tclr.top_container_id
-                               GROUP BY r.id, series, tc.indicator
-                               HAVING count(DISTINCT tc.id) > 1 ORDER BY r.id, series, tc.id''')
-
-                w_dupe = csv.DictWriter(dupe_report, dialect='excel-tab', fieldnames=['Barcode', 'New Indicator'])
-                w_dupe.writeheader()
-
-                dupe_id2indicator = {}
-                for row in db.fetchall():
-                    try:
-                        dupes = iter(json.loads(row['id2bc'].replace('\\', '\\\\'), object_pairs_hook=OrderedDict).items())
-                    except json.decoder.JSONDecodeError as e:
-                        log.warning('FAILED to process dupes for resource', data=row)
-                    first = next(dupes) # first one isn't a dupe! It gets to keep its indicator
-                    for cid, bc in dupes:
-                        res = aspace.client.get('repositories/2/top_containers/{}'.format(cid))
-                        if res.status_code == 200:
-                            container = res.json()
-                            if not container['indicator'].isnumeric():
-                                log.warning('FAILED duplicate_indicator is not numeric', container_id=cid, indicator=container['indicator'])
-                                continue
-                        else:
-                            log.warning('FAILED to fetch duplicate top container {}'.format(cid), status=res.status_code, response=ress.json())
-                            continue
-                        s2i_key = "{}.{}".format(row['id'], row['series'])
-                        if not s2i_key in series2idx:
-                            log.warning('FAILED to find series2idx', key=s2i_key, container_id=cid, barcode=bc)
-                            continue
-                        series2idx[s2i_key] += 1
-                        indicator = series2idx[s2i_key]
-                        dupe_id2indicator[cid] = indicator
-                        w_dupe.writerow({"Barcode": bc, "New Indicator": indicator})
-
-                        container['indicator'] = str(indicator)
-                        post_res = aspace.client.post(container['uri'], json=container)
-                        if post_res.status_code == 200:
-                            log.info('DUPE SORTED', barcode=bc, container_id = cid, new_indicator = indicator)
-                        else:
-                            log.warning('FAILED to sort out duplicate', barcode=bc, container_id = cid, new_indicator = indicator, status=post_res.status_code, body=post_res.json())
-
 
         log.info('end')
