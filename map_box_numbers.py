@@ -109,11 +109,9 @@ def box_no_or_bust(row):
 def convert_container_to_digital_object(container_info):
     '''Take a row representing a DGB (Digital Green Barcode) container and it's archival objects
 and transform it into a digital object linked to the correct AO.'''
-    try:
-        ao_id = one(container_info['ao_ids'])
-        cid = one(container_info['component_ids'])
-    except Exception as e:
-        import ipdb;ipdb.set_trace()
+    ao_id = one(container_info['ao_ids'])
+    cid = one(container_info['component_ids'])
+
     ao = ao_jsons[ao_id]
     del ao['position'] # updating AO with position set causes issues
 
@@ -257,51 +255,51 @@ if __name__ == '__main__':
                    GROUP BY tc.indicator
                    ORDER BY tc.id, tc.barcode, ao.component_id''')
             data = list(map_rows(db))
-            log.info('load_data_complete')
+        log.info('load_data_complete')
 
-            log.info('fetch_ao_jsons')
-            ao_jsons = {}
-            if args.cached_aos:
-                log.info('load_aos_from_cache')
-                with args.cached_aos as f:
-                    ao_jsons = {int(k):v for k,v in json.load(f).items()}
-            else:
-                for chunk in chunked(sorted(chain_aos(data)), 250):
-                    log.info('fetch_ao_chunk', chunk=chunk)
-                    ao_res = aspace.client.get('repositories/2/archival_objects', params={'id_set': chunk})
-                    if ao_res.status_code == 200:
-                        log.info('fetch_chunk_complete', chunk="{}-{}".format(chunk[0], chunk[-1]))
-                        for ao in ao_res.json():
-                            ao_id = int(ao['uri'][ao['uri'].rfind('/') + 1:])
-                            ao_jsons[ao_id] = ao
-                if args.cached_aos_save:
-                    log.info('save_aos_to_cache')
-                    with args.cached_aos_save as f:
-                        json.dump(ao_jsons, f, indent=4)
-            log.info('fetch_ao_jsons_complete')
+        log.info('fetch_ao_jsons')
+        ao_jsons = {}
+        if args.cached_aos:
+            log.info('load_aos_from_cache')
+            with args.cached_aos as f:
+                ao_jsons = {int(k):v for k,v in json.load(f).items()}
+        else:
+            for chunk in chunked(sorted(chain_aos(data)), 250):
+                log.info('fetch_ao_chunk', chunk=chunk)
+                ao_res = aspace.client.get('repositories/2/archival_objects', params={'id_set': chunk})
+                if ao_res.status_code == 200:
+                    log.info('fetch_chunk_complete', chunk="{}-{}".format(chunk[0], chunk[-1]))
+                    for ao in ao_res.json():
+                        ao_id = int(ao['uri'][ao['uri'].rfind('/') + 1:])
+                        ao_jsons[ao_id] = ao
+            if args.cached_aos_save:
+                log.info('save_aos_to_cache')
+                with args.cached_aos_save as f:
+                    json.dump(ao_jsons, f, indent=4)
+        log.info('fetch_ao_jsons_complete')
 
-            log.info('load_containers')
-            if args.cached_containers:
-                log.info('load_containers_from_cache')
-                with args.cached_containers as f:
-                    container_jsons = {int(k):v for k,v in json.load(f).items()}
-            else:
-                container_jsons = {}
-                for chunk in chunked(sorted(row['container_id'] for row in data), 250):
-                    log.info('fetch_container_chunk', chunk=chunk)
-                    c_res = aspace.client.get('repositories/2/top_containers', params={'id_set': chunk})
-                    if c_res.status_code == 200:
-                        log.info('fetch_chunk_complete', chunk="{}-{}".format(chunk[0], chunk[-1]))
-                        for c in c_res.json():
-                            c_id = int(c['uri'][c['uri'].rfind('/') + 1:])
-                            container_jsons[c_id] = c
-                if args.cached_containers_save:
-                    log.info('save_containers_to_cache')
-                    with args.cached_containers_save as f:
-                        json.dump(container_jsons, f, indent=4)
+        log.info('load_containers')
+        if args.cached_containers:
+            log.info('load_containers_from_cache')
+            with args.cached_containers as f:
+                container_jsons = {int(k):v for k,v in json.load(f).items()}
+        else:
+            container_jsons = {}
+            for chunk in chunked(sorted(row['container_id'] for row in data), 250):
+                log.info('fetch_container_chunk', chunk=chunk)
+                c_res = aspace.client.get('repositories/2/top_containers', params={'id_set': chunk})
+                if c_res.status_code == 200:
+                    log.info('fetch_chunk_complete', chunk="{}-{}".format(chunk[0], chunk[-1]))
+                    for c in c_res.json():
+                        c_id = int(c['uri'][c['uri'].rfind('/') + 1:])
+                        container_jsons[c_id] = c
+            if args.cached_containers_save:
+                log.info('save_containers_to_cache')
+                with args.cached_containers_save as f:
+                    json.dump(container_jsons, f, indent=4)
 
-            log.info('load_containers_complete')
-            log.info('data_retrieved')
+        log.info('load_containers_complete')
+        log.info('data_retrieved')
 
         for row in data:
             if row['barcode'].startswith('DGB'):
