@@ -32,10 +32,22 @@ if __name__ == "__main__":
 
     with open('barcode_report.csv', 'w') as barcode_report, conn:
         db = conn.cursor()
-        db.execute("""SELECT barcode FROM top_container WHERE barcode REGEXP '[0-9]+[gG]'""")
+        db.execute("""SELECT barcode FROM top_container WHERE barcode REGEXP '[0-9]+[gG]$'""")
+
+        # Green barcodes, either from explicit list OR from matching the "digits with G as last character" format
         green_barcodes = sorted(set(chain((first(row) for row in args.spreadsheet.worksheets[0].values), (row['barcode'] for row in db.fetchall()))))
 
+        # hash of all extant barcodes. Assumes no duplicates which is not safe in principle
+        # due to lack of unique index on barcode but is safe in practice across Tufts data
         db.execute("""SELECT id, barcode FROM location WHERE barcode IS NOT NULL""")
         bc_to_loc = {row['barcode']:int(row['id']) for row in db.fetchall()}
+
+        db.execute("""SELECT r.id,
+                             concat('["', group_concat(DISTINCT substr(ao.component_id, 7,3) SEPARATOR '","'), '"]') as series
+                      FROM resource r
+                      JOIN archival_object ao
+                        ON ao.root_record_id = r.id
+                  GROUP BY r.id""")
+        rid_to_series = {row['id']:json.loads(row['series']) for row in db.fetchall()}
 
     from ipdb import set_trace;set_trace()
