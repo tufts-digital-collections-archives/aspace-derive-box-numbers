@@ -42,12 +42,39 @@ if __name__ == "__main__":
         db.execute("""SELECT id, barcode FROM location WHERE barcode IS NOT NULL""")
         bc_to_loc = {row['barcode']:int(row['id']) for row in db.fetchall()}
 
+        # hash of resource id to list of series present in resource
         db.execute("""SELECT r.id,
                              concat('["', group_concat(DISTINCT substr(ao.component_id, 7,3) SEPARATOR '","'), '"]') as series
+
                       FROM resource r
                       JOIN archival_object ao
                         ON ao.root_record_id = r.id
                   GROUP BY r.id""")
         rid_to_series = {row['id']:json.loads(row['series']) for row in db.fetchall()}
+
+        # Hash of f"resource_id.series" to maximum indicator in series
+        db.execute('''SET group_concat_max_len=995000''')
+        db.execute('''SELECT r.id,
+                             substr(ao.component_id, 7, 3) as series,
+                             max(CAST(regexp_substr(tc.indicator, '[0123456789]+$') AS integer)) AS max_indicator
+                       FROM resource r
+                       JOIN archival_object ao ON ao.root_record_id = r.id
+                       JOIN instance i ON i.archival_object_id = ao.id
+                       JOIN sub_container sc ON i.id = sc.instance_id
+                       JOIN top_container_link_rlshp tclr ON tclr.sub_container_id = sc.id
+                       JOIN top_container tc ON tc.id = tclr.top_container_id
+                       WHERE tc.indicator REGEXP '[0123456789]+$'
+                       AND tc.indicator REGEXP '^[0123456789;, -]+$'
+                       GROUP BY r.id, series
+                       HAVING max_indicator > 0
+                       ORDER BY r.id''')
+
+        series2idx = {"{}.{}".format(el['id'], el['series']):el['max_indicator'] for el in db.fetchall()}
+
+        # create missing locations
+        # for each AO in TC with green bc
+        #     create TC
+        #     link AO to TC
+        #     link TC to location
 
     from ipdb import set_trace;set_trace()
