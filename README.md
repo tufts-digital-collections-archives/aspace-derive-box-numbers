@@ -109,6 +109,29 @@ optional arguments:
   --logfile LOGFILE    path to print log to
 ```
 
+## Create Locations
+
+There's a small script for creating locations from a spreadsheet. This spreadsheet is expected to consist of a first row of headers that match the fields in the location object,
+and an additional field `location_profile_URI` which has the URI of a location profile, WITHOUT a leading '/'.
+
+## Operation
+
+Running the script will create the locations, and leave a log in the same directory as the script, with the filename `create_locations.log`
+
+## Usage
+
+```
+usage: create_locations.py [-h] [--logfile LOGFILE] spreadsheet
+
+Script to create locations from spreadsheet
+
+positional arguments:
+  spreadsheet        Spreadsheet of location attrs
+
+optional arguments:
+  -h, --help         show this help message and exit
+  --logfile LOGFILE  path to print log to
+```
 
 ## Copyright
 
