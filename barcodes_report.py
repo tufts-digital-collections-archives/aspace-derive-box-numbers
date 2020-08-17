@@ -2,14 +2,18 @@
 import csv, json
 
 from argparse import ArgumentParser
+from datetime import date
 from getpass import getpass
 from itertools import chain
 
 import pymysql
+
 from openpyxl import load_workbook
 from more_itertools import first
 
 from asnake.logging import setup_logging, get_logger
+from asnake.aspace import ASpace
+from asnake.jsonmodel import JM
 
 ap = ArgumentParser(description="Script to determine green barcode locations")
 ap.add_argument('spreadsheet', type=load_workbook, help="Spreadsheet of location barcodes")
@@ -25,32 +29,46 @@ if __name__ == "__main__":
 
     log.info('start')
 
+    aspace = ASpace()
+    log.info('aspace_connect')
+
+    loc_csv_fields = ['location_barcode', 'location_id']
+
     conn = pymysql.connect(host=args.host, user=args.user, database=args.database, cursorclass=pymysql.cursors.DictCursor,
                            password=getpass("Please enter MySQL password for {}: ".format(args.user)))
-
     log.info('mysql_connect')
 
-    with open('barcode_report.csv', 'w') as barcode_report, conn:
+    with open('barcode_report.csv', 'w') as barcode_report,\
+         open('locations_created_report.csv', 'w') as loc_report,\
+         conn:
+
         db = conn.cursor()
-        db.execute("""SELECT barcode FROM top_container WHERE barcode REGEXP '[0-9]+[gG]$'""")
+        db.execute("""SELECT barcode FROM top_container WHERE barcode REGEXP '^[0-9]+[gG]$'""")
 
         # Green barcodes, either from explicit list OR from matching the "digits with G as last character" format
-        green_barcodes = sorted(set(chain((first(row) for row in args.spreadsheet.worksheets[0].values), (row['barcode'] for row in db.fetchall()))))
+        green_barcodes = sorted(set(chain((first(row) for row in args.spreadsheet.worksheets[0].values), (row['barcode'][0:-1] for row in db.fetchall()))))
+        log.info('got_green_barcodes')
 
         # hash of all extant barcodes. Assumes no duplicates which is not safe in principle
         # due to lack of unique index on barcode but is safe in practice across Tufts data
         db.execute("""SELECT id, barcode FROM location WHERE barcode IS NOT NULL""")
         bc_to_loc = {row['barcode']:int(row['id']) for row in db.fetchall()}
+        log.info('got_all_location_barcodes')
+
+        missing_locations = [barcode for barcode in green_barcodes if not barcode in bc_to_loc]
+        log.info('got_missing_locations')
 
         # hash of resource id to list of series present in resource
         db.execute("""SELECT r.id,
                              concat('["', group_concat(DISTINCT substr(ao.component_id, 7,3) SEPARATOR '","'), '"]') as series
 
                       FROM resource r
-                      JOIN archival_object ao
+                      INNER JOIN archival_object ao
                         ON ao.root_record_id = r.id
+                      WHERE ao.component_id REGEXP '^[A-Z]{2}[0123456789]{3}[.][0123456789]{3}[.]'
                   GROUP BY r.id""")
-        rid_to_series = {row['id']:json.loads(row['series']) for row in db.fetchall()}
+        rid_to_series = {str(row['id']):json.loads(row['series']) for row in db.fetchall()}
+        log.info('got_resource_id_to_series')
 
         # Hash of f"resource_id.series" to maximum indicator in series
         db.execute('''SET group_concat_max_len=995000''')
@@ -70,11 +88,112 @@ if __name__ == "__main__":
                        ORDER BY r.id''')
 
         series2idx = {"{}.{}".format(el['id'], el['series']):el['max_indicator'] for el in db.fetchall()}
+        log.info('got_series_last_index')
 
+        log.info('create_missing_locations')
         # create missing locations
-        # for each AO in TC with green bc
-        #     create TC
-        #     link AO to TC
-        #     link TC to location
+        loc_template = JM.location(
+            building='Tisch/DCA'
+        )
+        for loc_bc in missing_locations:
+            log.info('creating_location', barcode=loc_bc)
+            res = aspace.client.post('locations', json={**loc_template, 'barcode': loc_bc})
+            if res.status_code == 200:
+                log.info('created_location', result=res.json())
+                # add newly created barcode to hash
+                bc_to_loc[loc_bc] = res.json()['uri'].split('/')[-1]
+            else:
+                log.info('FAILED_create_location', result=res.json(), status_code=res.status_code)
 
-    from ipdb import set_trace;set_trace()
+        # for each green barcode
+        for barcode in green_barcodes:
+            # going to the API for this is unexpectedly horrible, so we're cheating and going to the database
+            db.execute('''SELECT i.archival_object_id FROM top_container tc
+                            JOIN top_container_link_rlshp tclr ON tclr.top_container_id = tc.id
+                            JOIN sub_container sc ON sc.id = tclr.sub_container_id
+                            JOIN instance i ON i.id = sc.instance_id
+                           WHERE barcode REGEXP %s AND i.archival_object_id IS NOT NULL''', (fr'^{barcode}[gG]$',))
+            ao_uris = [f"/repositories/2/archival_objects/{el['archival_object_id']}" for el in db.fetchall()]
+            if not len(ao_uris):
+                log.error('empty_ao_uris', barcode=barcode)
+                continue
+            try:
+                location_uri = f'/locations/{bc_to_loc[barcode]}'
+            except KeyError as e:
+                log.error('location_barcode_not_in_bc_to_loc', barcode = barcode)
+                continue
+            # Template for top_container object
+            tc_tmpl = JM.top_container(
+                type='box',
+                locations=[JM.container_location(
+                    status="current",
+                    ref=location_uri,
+                    start_date=date.today().isoformat())]
+            )
+            idx = 0
+            failures = []
+            for ao_uri in ao_uris:
+                ao = aspace.client.get(ao_uri).json()
+                resource_id = ao['resource']['ref'].split('/')[-1]
+                # If there's only one series, start numbering at last box!
+                # Doing a default because at least one resource and possibly others has no normative boxes (and thus NO series)
+                if len(rid_to_series.get(resource_id, [])) == 1:
+                    try:
+                        idx = series2idx[f"{resource_id}.{rid_to_series[resource_id][0]}"] + 1
+                    except KeyError:
+                        log.info('missing_series2idx', resource_id=resource_id, rid_to_series_entries=rid_to_series.get(resource_id))
+                        # if we couldn't find one somehow but still had length 1, start from 1
+                        series2idx[f"{resource_id}.{rid_to_series[resource_id][0]}"] = 0
+
+                    series2idx[f"{resource_id}.{rid_to_series[resource_id][0]}"] += 1
+
+
+                # Otherwise, start from scratch
+                else:
+                    idx += 1
+                tc_json = {**tc_tmpl, "indicator": str(idx)}
+                res = aspace.client.post('repositories/2/top_containers', json=tc_json)
+                if res.status_code == 200:
+                    log.info('created_tc', tc=res.json(), indicator=str(idx))
+                    tc_uri = res.json()['uri']
+                    del ao['position']
+                    ao['instances'].append(
+                        JM.instance(
+                            instance_type='mixed_materials',
+                            sub_container=JM.sub_container(
+                                top_container=JM.top_container(
+                                    ref=tc_uri
+                                )
+                            )
+                        )
+                    )
+                    ao_res = aspace.client.post(ao['uri'], json=ao)
+                    if ao_res.status_code == 200:
+                        log.info('ao_updated', ao=ao_res.json())
+                    else:
+                        log.info('ao_update_failed', ao=res.json(), status_code=res.status_code)
+                        failures.append(ao_uri)
+                else:
+                    log.info('create_tc_failed', tc=res.json(), status_code=res.status_code)
+                    failures.append(ao_uri)
+            if not failures:
+                try:
+                    db.execute('SELECT id FROM top_container WHERE barcode REGEXP %s', (fr'^{barcode}[gG]$',))
+                    top_container_id = db.fetchone()['id']
+                    del_res = aspace.client.delete(f'/repositories/2/top_containers/{top_container_id}')
+                    if del_res.status_code == 200:
+                        log.info('deleted_container', top_container_id=top_container_id)
+                    else:
+                        log.info('failed to delete', top_container_id=top_container_id, del_res=del_res.json(), status_code=del_res.status_code)
+                except Exception as e:
+                    print(e)
+
+
+
+
+        # for each AO in original TC with green bc
+        #     figure out indicator
+        #     create new TC (linked to location)
+        #     link AO to new TC
+
+    log.info('end')
