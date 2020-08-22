@@ -56,7 +56,7 @@ if __name__ == "__main__":
         log.info('got_all_location_barcodes')
 
         missing_locations = [barcode for barcode in green_barcodes if not barcode in bc_to_loc]
-        log.info('got_missing_locations')
+        log.info('got_missing_locations', missing_locations=missing_locations)
 
         # hash of resource id to list of series present in resource
         db.execute("""SELECT r.id,
@@ -112,7 +112,7 @@ if __name__ == "__main__":
                             JOIN top_container_link_rlshp tclr ON tclr.top_container_id = tc.id
                             JOIN sub_container sc ON sc.id = tclr.sub_container_id
                             JOIN instance i ON i.id = sc.instance_id
-                           WHERE barcode REGEXP %s AND i.archival_object_id IS NOT NULL''', (fr'^{barcode}[gG]$',))
+                           WHERE barcode REGEXP %s AND i.archival_object_id IS NOT NULL''', (fr'^{barcode}[gG]?$',))
             ao_uris = [f"/repositories/2/archival_objects/{el['archival_object_id']}" for el in db.fetchall()]
             if not len(ao_uris):
                 log.error('empty_ao_uris', barcode=barcode)
@@ -125,7 +125,7 @@ if __name__ == "__main__":
             # Template for top_container object
             tc_tmpl = JM.top_container(
                 type='box',
-                locations=[JM.container_location(
+                container_locations=[JM.container_location(
                     status="current",
                     ref=location_uri,
                     start_date=date.today().isoformat())]
