@@ -178,7 +178,7 @@ if __name__ == "__main__":
                     failures.append(ao_uri)
             if not failures:
                 try:
-                    db.execute('SELECT id FROM top_container WHERE barcode REGEXP %s', (fr'^{barcode}[gG]$',))
+                    db.execute('SELECT id FROM top_container WHERE barcode REGEXP %s', (fr'^{barcode}[gG]?$',))
                     top_container_id = db.fetchone()['id']
                     del_res = aspace.client.delete(f'/repositories/2/top_containers/{top_container_id}')
                     if del_res.status_code == 200:
@@ -187,13 +187,5 @@ if __name__ == "__main__":
                         log.info('failed to delete', top_container_id=top_container_id, del_res=del_res.json(), status_code=del_res.status_code)
                 except Exception as e:
                     print(e)
-
-
-
-
-        # for each AO in original TC with green bc
-        #     figure out indicator
-        #     create new TC (linked to location)
-        #     link AO to new TC
 
     log.info('end')
