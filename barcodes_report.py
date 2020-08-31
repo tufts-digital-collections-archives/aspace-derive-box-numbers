@@ -42,6 +42,14 @@ if __name__ == "__main__":
          open('locations_created_report.csv', 'w') as loc_report,\
          conn:
 
+        bc_report = csv.DictWriter(barcode_report,
+                                   dialect='excel-tab',
+                                   fieldnames=['barcode', 'location_id', 'top_container_uris'])
+        bc_report.writeheader()
+        lc_report = csv.DictWriter(loc_report,
+                                   dialect='excel-tab',
+                                   fieldnames=['barcode', 'location_id'])
+
         db = conn.cursor()
         db.execute("""SELECT barcode FROM top_container WHERE barcode REGEXP '^[0-9]+[gG]$'""")
 
@@ -102,9 +110,10 @@ if __name__ == "__main__":
                 log.info('created_location', result=res.json())
                 # add newly created barcode to hash
                 bc_to_loc[loc_bc] = res.json()['uri'].split('/')[-1]
+                lc_report.writerow({'barcode': loc_bc, 'location_id': bc_to_loc[loc_bc]})
             else:
                 log.info('FAILED_create_location', result=res.json(), status_code=res.status_code)
-
+                lc_report.writerow({'barcode': loc_bc, 'location_id': 'FAILED TO CREATE'})
         # for each green barcode
         for barcode in green_barcodes:
             # going to the API for this is unexpectedly horrible, so we're cheating and going to the database
@@ -116,6 +125,7 @@ if __name__ == "__main__":
             ao_uris = [f"/repositories/2/archival_objects/{el['archival_object_id']}" for el in db.fetchall()]
             if not len(ao_uris):
                 log.error('empty_ao_uris', barcode=barcode)
+                bc_report.writerow({'barcode': barcode, 'location_id': bc_to_loc[barcode], 'top_container_uris': 'EMPTY - either barcode did not exist or no Archival Objects were associated'})
                 continue
             try:
                 location_uri = f'/locations/{bc_to_loc[barcode]}'
@@ -132,6 +142,7 @@ if __name__ == "__main__":
             )
             idx = 0
             failures = []
+            top_container_uris = []
             for ao_uri in ao_uris:
                 ao = aspace.client.get(ao_uri).json()
                 resource_id = ao['resource']['ref'].split('/')[-1]
@@ -156,6 +167,7 @@ if __name__ == "__main__":
                 if res.status_code == 200:
                     log.info('created_tc', tc=res.json(), indicator=str(idx))
                     tc_uri = res.json()['uri']
+                    top_container_uris.append(tc_uri)
                     del ao['position']
                     ao['instances'].append(
                         JM.instance(
@@ -178,6 +190,7 @@ if __name__ == "__main__":
                     failures.append(ao_uri)
             if not failures:
                 try:
+                    bc_report.writerow({'barcode': barcode, 'location_id': bc_to_loc[barcode], 'top_container_uris': ";".join(top_container_uris)})
                     db.execute('SELECT id FROM top_container WHERE barcode REGEXP %s', (fr'^{barcode}[gG]?$',))
                     top_container_id = db.fetchone()['id']
                     del_res = aspace.client.delete(f'/repositories/2/top_containers/{top_container_id}')
