@@ -4,7 +4,7 @@ import csv, json
 from argparse import ArgumentParser
 from datetime import date
 from getpass import getpass
-from itertools import chain
+from itertools import chain, repeat
 
 import pymysql
 
@@ -17,6 +17,7 @@ from asnake.jsonmodel import JM
 
 ap = ArgumentParser(description="Script to determine green barcode locations")
 ap.add_argument('spreadsheet', type=load_workbook, help="Spreadsheet of location barcodes")
+ap.add_argument('barcode_source', type=load_workbook, help="Spreadsheet of new barcodes to be assigned")
 ap.add_argument('--host', default='localhost', help="host of ASpace database")
 ap.add_argument('--user', default='pobocks', help='MySQL user to run as when connecting to ASpace database')
 ap.add_argument('--database', default='tuftschivesspace', help="Name of MySQL database")
@@ -32,11 +33,28 @@ if __name__ == "__main__":
     aspace = ASpace()
     log.info('aspace_connect')
 
+    bc_csv_fields = [
+        'original_barcode',
+        'original_container_id',
+        'location_id',
+        'new_barcode',
+        'new_container_id',
+        'box_number',
+        'component_id',
+        'ao_id'
+    ]
+
     loc_csv_fields = ['location_barcode', 'location_id']
+
+    # Barcodes expected to be in first column of single-worksheet excel
+    # To get the next barcode, we do: next(barcode_source)
+    barcode_source = (str(first(row)) for row in args.barcode_source.worksheets[0].values)
 
     conn = pymysql.connect(host=args.host, user=args.user, database=args.database, cursorclass=pymysql.cursors.DictCursor,
                            password=getpass("Please enter MySQL password for {}: ".format(args.user)))
     log.info('mysql_connect')
+
+
 
     with open('barcode_report.csv', 'w') as barcode_report,\
          open('locations_created_report.csv', 'w') as loc_report,\
@@ -44,7 +62,7 @@ if __name__ == "__main__":
 
         bc_report = csv.DictWriter(barcode_report,
                                    dialect='excel-tab',
-                                   fieldnames=['barcode', 'location_id', 'top_container_uris'])
+                                   fieldnames=bc_csv_fields)
         bc_report.writeheader()
         lc_report = csv.DictWriter(loc_report,
                                    dialect='excel-tab',
@@ -113,19 +131,20 @@ if __name__ == "__main__":
                 lc_report.writerow({'barcode': loc_bc, 'location_id': bc_to_loc[loc_bc]})
             else:
                 log.info('FAILED_create_location', result=res.json(), status_code=res.status_code)
-                lc_report.writerow({'barcode': loc_bc, 'location_id': 'FAILED TO CREATE'})
+                lc_report.writerow({'original_barcode': loc_bc, 'location_id': 'FAILED TO CREATE'})
         # for each green barcode
         for barcode in green_barcodes:
             # going to the API for this is unexpectedly horrible, so we're cheating and going to the database
-            db.execute('''SELECT i.archival_object_id FROM top_container tc
+            db.execute('''SELECT ao.id, ao.component_id, tc.id AS top_container_id FROM top_container tc
                             JOIN top_container_link_rlshp tclr ON tclr.top_container_id = tc.id
                             JOIN sub_container sc ON sc.id = tclr.sub_container_id
                             JOIN instance i ON i.id = sc.instance_id
+                            JOIN archival_object ao ON ao.id = i.archival_object_id
                            WHERE barcode REGEXP %s AND i.archival_object_id IS NOT NULL''', (fr'^{barcode}[gG]?$',))
-            ao_uris = [f"/repositories/2/archival_objects/{el['archival_object_id']}" for el in db.fetchall()]
-            if not len(ao_uris):
+            ao_infos = list(db.fetchall())
+
+            if not len(ao_infos):
                 log.error('empty_ao_uris', barcode=barcode)
-                bc_report.writerow({'barcode': barcode, 'location_id': bc_to_loc[barcode], 'top_container_uris': 'EMPTY - either barcode did not exist or no Archival Objects were associated'})
                 continue
             try:
                 location_uri = f'/locations/{bc_to_loc[barcode]}'
@@ -143,8 +162,8 @@ if __name__ == "__main__":
             idx = 0
             failures = []
             top_container_uris = []
-            for ao_uri in ao_uris:
-                ao = aspace.client.get(ao_uri).json()
+            for ao_info in ao_infos:
+                ao = aspace.client.get(f"/repositories/2/archival_objects/{ao_info['id']}").json()
                 resource_id = ao['resource']['ref'].split('/')[-1]
                 # If there's only one series, start numbering at last box!
                 # Doing a default because at least one resource and possibly others has no normative boxes (and thus NO series)
@@ -162,7 +181,17 @@ if __name__ == "__main__":
                 # Otherwise, start from scratch
                 else:
                     idx += 1
+
                 tc_json = {**tc_tmpl, "indicator": str(idx)}
+                try:
+                    new_barcode = next(barcode_source)
+                    tc_json['barcode'] = new_barcode
+                except StopIteration:
+                    # If we ran out of barcodes, create one with no barcode and log the error
+                    # Create placeholder in new_barcode for report
+                    new_barcode = 'RAN OUT OF BARCODES'
+                    log.error('ran_out_of_barcodes', old_barcode=barcode, ao_info=ao_info)
+
                 res = aspace.client.post('repositories/2/top_containers', json=tc_json)
                 if res.status_code == 200:
                     log.info('created_tc', tc=res.json(), indicator=str(idx))
@@ -182,15 +211,22 @@ if __name__ == "__main__":
                     ao_res = aspace.client.post(ao['uri'], json=ao)
                     if ao_res.status_code == 200:
                         log.info('ao_updated', ao=ao_res.json())
+                        bc_report.writerow({'original_barcode': barcode,
+                                            'original_container_id': ao_info['top_container_id'],
+                                            'location_id': bc_to_loc[barcode],
+                                            'new_barcode': new_barcode,
+                                            'new_container_id': res.json()['id'],
+                                            'box_number': str(idx),
+                                            'component_id': ao_info['component_id'],
+                                            'ao_id': ao_info['id']})
                     else:
                         log.info('ao_update_failed', ao=res.json(), status_code=res.status_code)
-                        failures.append(ao_uri)
+                        failures.append(ao_info)
                 else:
                     log.info('create_tc_failed', tc=res.json(), status_code=res.status_code)
-                    failures.append(ao_uri)
+                    failures.append(ao_info)
             if not failures:
                 try:
-                    bc_report.writerow({'barcode': barcode, 'location_id': bc_to_loc[barcode], 'top_container_uris': ";".join(top_container_uris)})
                     db.execute('SELECT id FROM top_container WHERE barcode REGEXP %s', (fr'^{barcode}[gG]?$',))
                     top_container_id = db.fetchone()['id']
                     del_res = aspace.client.delete(f'/repositories/2/top_containers/{top_container_id}')
