@@ -1,10 +1,11 @@
 #! /usr/bin/env python3
-import csv, json
+import csv, json, re
 
 from argparse import ArgumentParser
+from collections import defaultdict
 from datetime import date
 from getpass import getpass
-from itertools import chain, repeat
+from itertools import chain, repeat, groupby
 
 import pymysql
 
@@ -22,6 +23,8 @@ ap.add_argument('--host', default='localhost', help="host of ASpace database")
 ap.add_argument('--user', default='pobocks', help='MySQL user to run as when connecting to ASpace database')
 ap.add_argument('--database', default='tuftschivesspace', help="Name of MySQL database")
 ap.add_argument('--logfile', default='barcodes_report.log', help='path to print log to')
+
+normal_component_id = re.compile(r'^(?P<coll_id>[^.]{5})\.(?P<series>\d{3})(?:\.\d{3})*\.(?P<box_no>\d{3})(?:\.\d{5}){0,2}$')
 
 if __name__ == "__main__":
     args = ap.parse_args()
@@ -140,7 +143,8 @@ if __name__ == "__main__":
                             JOIN sub_container sc ON sc.id = tclr.sub_container_id
                             JOIN instance i ON i.id = sc.instance_id
                             JOIN archival_object ao ON ao.id = i.archival_object_id
-                           WHERE barcode REGEXP %s AND i.archival_object_id IS NOT NULL''', (fr'^{barcode}[gG]?$',))
+                           WHERE barcode REGEXP %s AND i.archival_object_id IS NOT NULL
+                           ORDER BY ao.component_id ASC''', (fr'^{barcode}[gG]?$',))
             ao_infos = list(db.fetchall())
 
             if not len(ao_infos):
@@ -151,18 +155,30 @@ if __name__ == "__main__":
             except KeyError as e:
                 log.error('location_barcode_not_in_bc_to_loc', barcode = barcode)
                 continue
+
+            green_ao_infos = []
+            normative_ao_infos = []
+            for ao_info in ao_infos:
+                m = normal_component_id.match(ao_info['component_id'])
+                if not m:
+                    green_ao_infos.append(ao_info)
+                else:
+                    ao_info['match'] = m
+                    normative_ao_infos.append(ao_info)
+
             # Template for top_container object
             tc_tmpl = JM.top_container(
                 type='box',
                 container_locations=[JM.container_location(
                     status="current",
                     ref=location_uri,
-                    start_date=date.today().isoformat())]
+                    start_date=date.today().isoformat()
+                )]
             )
-            idx = 0
             failures = []
             top_container_uris = []
-            for ao_info in ao_infos:
+            for ao_info in green_ao_infos:
+                idx = 0
                 ao = aspace.client.get(f"/repositories/2/archival_objects/{ao_info['id']}").json()
                 resource_id = ao['resource']['ref'].split('/')[-1]
                 # If there's only one series, start numbering at last box!
@@ -174,6 +190,7 @@ if __name__ == "__main__":
                         log.info('missing_series2idx', resource_id=resource_id, rid_to_series_entries=rid_to_series.get(resource_id))
                         # if we couldn't find one somehow but still had length 1, start from 1
                         series2idx[f"{resource_id}.{rid_to_series[resource_id][0]}"] = 0
+                        idx = 1
 
                     series2idx[f"{resource_id}.{rid_to_series[resource_id][0]}"] += 1
 
@@ -222,6 +239,63 @@ if __name__ == "__main__":
                     else:
                         log.info('ao_update_failed', ao=res.json(), status_code=res.status_code)
                         failures.append(ao_info)
+                else:
+                    log.info('create_tc_failed', tc=res.json(), status_code=res.status_code)
+                    failures.append(ao_info)
+
+            # Group AOs by series,box_no and create a top container for each box number
+            def ao_infos_key(ao_info):
+                return ao_info['match'].group('box_no')
+
+            for k, group in groupby(
+                    sorted(
+                        normative_ao_infos,
+                        key=ao_infos_key),
+                    key=ao_infos_key):
+                box_no = k.lstrip('0')
+                aos = list(group)
+                tc_json = {**tc_tmpl, "indicator": box_no}
+                try:
+                    new_barcode = next(barcode_source)
+                    tc_json['barcode'] = new_barcode
+                except StopIteration:
+                    # If we ran out of barcodes, create one with no barcode and log the error
+                    # Create placeholder in new_barcode for report
+                    new_barcode = 'RAN OUT OF BARCODES'
+                    log.error('ran_out_of_barcodes', old_barcode=barcode, aos=[x['id'] for x in aos])
+                res = aspace.client.post('repositories/2/top_containers', json=tc_json)
+
+                if res.status_code == 200:
+                    log.info('created_tc', tc=res.json(), indicator=str(box_no))
+                    tc_uri = res.json()['uri']
+                    top_container_uris.append(tc_uri)
+                    for ao_info in aos:
+                        ao = aspace.client.get(f"/repositories/2/archival_objects/{ao_info['id']}").json()
+                        del ao['position']
+                        ao['instances'].append(
+                            JM.instance(
+                                instance_type='mixed_materials',
+                                sub_container=JM.sub_container(
+                                    top_container=JM.top_container(
+                                        ref=tc_uri
+                                    )
+                                )
+                            )
+                        )
+                        ao_res = aspace.client.post(ao['uri'], json=ao)
+                        if ao_res.status_code == 200:
+                            log.info('ao_updated', ao=ao_res.json())
+                            bc_report.writerow({'original_barcode': barcode,
+                                                'original_container_id': ao_info['top_container_id'],
+                                                'location_id': bc_to_loc[barcode],
+                                                'new_barcode': new_barcode,
+                                                'new_container_id': res.json()['id'],
+                                                'box_number': box_no,
+                                                'component_id': ao_info['component_id'],
+                                                'ao_id': ao_info['id']})
+                        else:
+                            log.info('ao_update_failed', ao=res.json(), status_code=res.status_code)
+                            failures.append(ao_info)
                 else:
                     log.info('create_tc_failed', tc=res.json(), status_code=res.status_code)
                     failures.append(ao_info)
