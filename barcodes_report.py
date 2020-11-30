@@ -249,39 +249,39 @@ if __name__ == "__main__":
                 tc_json = {**tc_tmpl, "indicator": box_no}
                 create_tc(aos, tc_json)
 
-            def green_ao_infos_sort_key(ao_info):
-                return ao_info['ead_id'], ao_info['component_id']
+        def green_ao_infos_sort_key(ao_info):
+            return ao_info['ead_id'], ao_info['component_id']
 
-            def green_ao_infos_groupby_key(ao_info):
-                return ao_info['ead_id']
+        def green_ao_infos_groupby_key(ao_info):
+            return ao_info['root_record_id']
 
-            for ead_id, group in groupby(
-                    sorted(green_ao_infos, key=green_ao_infos_sort_key),
-                    key=green_ao_infos_groupby_key):
-                ao_infos_for_resource = list(group)
+        for resource_id, group in groupby(
+                sorted(green_ao_infos, key=green_ao_infos_sort_key),
+                key=green_ao_infos_groupby_key):
+            ao_infos_for_resource = list(group)
 
-                idx = 0
-                # If there's only one series, start numbering at last box!
-                # Doing a default because at least one resource and possibly others has no normative boxes (and thus NO series)
-                if len(rid_to_series.get(resource_id, [])) == 1:
-                    series = f"{resource_id}.{rid_to_series[resource_id][0]}"
-                    try:
-                        idx = series2idx[series] + 1
-                    except KeyError:
-                        log.info('missing_series2idx', resource_id=resource_id, rid_to_series_entries=rid_to_series.get(resource_id))
-                        # if we couldn't find one somehow but still had length 1, start from 1
-                        idx = 1
+            idx = 0
+            # If there's only one series, start numbering at last box!
+            # Doing a default because at least one resource and possibly others has no normative boxes (and thus NO series)
+            if len(rid_to_series.get(resource_id, [])) == 1:
+                series = f"{resource_id}.{rid_to_series[resource_id][0]}"
+                try:
+                    idx = series2idx[series] + 1
+                except KeyError:
+                    log.info('missing_series2idx', resource_id=resource_id, rid_to_series_entries=rid_to_series.get(resource_id))
+                    # if we couldn't find one somehow but still had length 1, start from 1
+                    idx = 1
 
                 # Otherwise, start from scratch
-                else:
-                    idx = 1
-                for ao_info in ao_infos_for_resource:
-                    ao = aspace.client.get(f"/repositories/2/archival_objects/{ao_info['id']}").json()
-                    resource_id = ao['resource']['ref'].split('/')[-1]
+            else:
+                idx = 1
+            for ao_info in ao_infos_for_resource:
+                ao = aspace.client.get(f"/repositories/2/archival_objects/{ao_info['id']}").json()
+                tc_json = {**tc_tmpl, "indicator": str(idx)}
+                create_tc([ao_info], tc_json)
+                idx += 1
 
-                    tc_json = {**tc_tmpl, "indicator": str(idx)}
-                    create_tc([ao_info], tc_json)
-
+        # Clean up all psuedo-locations that had no failures and are thus empty
         for bc, fails in failures.items():
             if not fails:
                 try:
