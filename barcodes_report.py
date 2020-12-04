@@ -195,7 +195,7 @@ if __name__ == "__main__":
         # for each green barcode
         for barcode in green_barcodes:
             # going to the API for this is unexpectedly horrible, so we're cheating and going to the database
-            db.execute('''SELECT ao.id, ao.root_record_id, r.ead_id, ao.component_id, tc.id AS top_container_id FROM top_container tc
+            db.execute('''SELECT ao.id, ao.root_record_id, ao.position, r.ead_id, ao.component_id, tc.id AS top_container_id FROM top_container tc
                             JOIN top_container_link_rlshp tclr ON tclr.top_container_id = tc.id
                             JOIN sub_container sc ON sc.id = tclr.sub_container_id
                             JOIN instance i ON i.id = sc.instance_id
@@ -250,7 +250,7 @@ if __name__ == "__main__":
                 create_tc(aos, tc_json)
 
         def green_ao_infos_sort_key(ao_info):
-            return ao_info['ead_id'], ao_info['component_id']
+            return ao_info['ead_id'], ao_info['position']
 
         def green_ao_infos_groupby_key(ao_info):
             return ao_info['root_record_id']
