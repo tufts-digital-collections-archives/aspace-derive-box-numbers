@@ -1,6 +1,6 @@
 # ASpace Derive Box-numbers
 
-A script for deriving box-numbers from archival object component identifiers, and some associated scripts and SQL queries.  This README covers the `map_box_numbers.py` and `report_duplicates.py` scripts; the SQL docs in `db_queries` and any other scripts are ephemera, left as an excercise to the reader.
+A script for deriving box-numbers from archival object component identifiers, and some associated scripts and SQL queries.  This README covers the `map_box_numbers.py`, `map_green_barcode_box_numbers.py` and `report_duplicates.py` scripts; the SQL docs in `db_queries` and any other scripts are ephemera, left as an excercise to the reader.
 
 This script's operation is specifically keyed to details of Tufts University's data, and should not be taken as a general means of mapping component IDs to box numbers.
 
@@ -83,6 +83,48 @@ optional arguments:
                         source of cached container jsons
   --cached_containers_save CACHED_CONTAINERS_SAVE
                         place to store cached container jsons
+```
+
+## `map_green_barcode_box_numbers.py`
+
+### Operation
+
+When run, this script will process two Excel spreadsheets, both of which are expected to contain one worksheet with no headers, with all data consisting of barcodes:
+
+1. top container barcodes for containers that are being used as pseudo-locations (i.e. that represent a shelf rather than an actual container)
+2. new barcodes to assign to newly created top containers
+
+It will then:
+
+1. create real locations with the same barcodes
+2. take the archival objects in these containers, group them by CUID-indicated box number where possible, and create new top containers, associating them with the correct locations.
+3. Remove the pseudo-locations IF AND ONLY IF there were no errors in steps 1 and 2.
+
+This script will change values in ArchivesSpace; note that there is not a "no-commit" mode, because the changes to be made depend on each other enough that running the analytical parts alone isn't really coherent.  It will also output a report (by default `barcodes_report.csv`) which archivists should then use to apply the proper barcode to the proper physical container.  It also produces a log of actions taken (by default `barcodes_report.log`).  These will be emitted in the directory the script is run from.
+
+### Usage
+
+```
+usage: map_green_barcode_box_numbers.py [-h] [--host HOST] [--user USER]
+                                        [--database DATABASE]
+                                        [--logfile LOGFILE]
+                                        [--reportfile REPORTFILE]
+                                        spreadsheet barcode_source
+
+Script to convert green barcode pseudo-locations (containers) into proper
+locations, deriving and assigning box numbers.
+
+positional arguments:
+  spreadsheet               Spreadsheet of pseudo-location barcodes
+  barcode_source            Spreadsheet of new barcodes to be assigned
+
+optional arguments:
+  -h, --help                show this help message and exit
+  --host HOST               host of ASpace database
+  --user USER               MySQL user to run as when connecting to ASpace database
+  --database DATABASE       Name of MySQL database
+  --logfile LOGFILE         path to print log to
+  --reportfile REPORTFILE   path to print CSV report to
 ```
 
 ## Report Duplicates

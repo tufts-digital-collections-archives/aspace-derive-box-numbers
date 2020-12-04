@@ -16,13 +16,14 @@ from asnake.logging import setup_logging, get_logger
 from asnake.aspace import ASpace
 from asnake.jsonmodel import JM
 
-ap = ArgumentParser(description="Script to determine green barcode locations")
-ap.add_argument('spreadsheet', type=load_workbook, help="Spreadsheet of location barcodes")
+ap = ArgumentParser(description="Script to convert green barcode pseudo-locations (containers) into proper locations, deriving and assigning box numbers.")
+ap.add_argument('spreadsheet', type=load_workbook, help="Spreadsheet of pseudo-location barcodes")
 ap.add_argument('barcode_source', type=load_workbook, help="Spreadsheet of new barcodes to be assigned")
 ap.add_argument('--host', default='localhost', help="host of ASpace database")
 ap.add_argument('--user', default='pobocks', help='MySQL user to run as when connecting to ASpace database')
 ap.add_argument('--database', default='tuftschivesspace', help="Name of MySQL database")
 ap.add_argument('--logfile', default='barcodes_report.log', help='path to print log to')
+ap.add_argument('--reportfile', default='barcodes_report.csv', help='path to print CSV report to')
 
 normal_component_id = re.compile(r'^(?P<coll_id>[^.]{5})\.(?P<series>\d{3})(?:\.\d{3})*\.(?P<box_no>\d{3})(?:\.\d{5}){0,2}$')
 
@@ -109,7 +110,7 @@ if __name__ == "__main__":
 
 
 
-    with open('barcode_report.csv', 'w') as barcode_report,\
+    with open(args.reportfile, 'w') as barcode_report,\
          open('locations_created_report.csv', 'w') as loc_report,\
          conn:
 
