@@ -154,7 +154,7 @@ if __name__ == "__main__":
         db.execute('''SET group_concat_max_len=995000''')
         db.execute('''SELECT r.id,
                              substr(ao.component_id, 7, 3) as series,
-                             max(CAST(regexp_substr(tc.indicator, '[0123456789]+$') AS integer)) AS max_indicator
+                             max(CAST(regexp_substr(tc.indicator, '[0123456789]+$') AS SIGNED INTEGER)) AS max_indicator
                        FROM resource r
                        JOIN archival_object ao ON ao.root_record_id = r.id
                        JOIN instance i ON i.archival_object_id = ao.id
